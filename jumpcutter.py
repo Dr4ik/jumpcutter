@@ -25,19 +25,19 @@ def get_max_volume(s):
 
 
 def copy_frame(input_frame, output_frame):
-    src = TEMP_FOLDER + "/frame{:06d}".format(input_frame + 1) + ".jpg"
-    dst = TEMP_FOLDER + "/newFrame{:06d}".format(output_frame + 1) + ".jpg"
+    src = f"{TEMP_FOLDER}/frame{input_frame + 1:06d}.jpg"
+    dst = f"{TEMP_FOLDER}/newFrame{output_frame + 1:06d}.jpg"
     if not os.path.isfile(src):
         return False
     copyfile(src, dst)
     if output_frame % 20 == 19:
-        print(str(output_frame + 1) + " time-altered frames saved.")
+        print(f"{output_frame + 1} time-altered frames saved.")
     return True
 
 
 def input_to_output_filename(file_name):
     dot_index = file_name.rfind(".")
-    return file_name[:dot_index] + "_ALTERED" + file_name[dot_index:]
+    return f"{file_name[:dot_index]}_ALTERED{file_name[dot_index:]}"
 
 
 def create_path(s):
@@ -103,23 +103,22 @@ AUDIO_FADE_ENVELOPE_SIZE = 400  # smooth out transitiion's audio by quickly fadi
 
 create_path(TEMP_FOLDER)
 
-command = "ffmpeg -i " + INPUT_FILE + " -qscale:v " + str(
-    FRAME_QUALITY) + " " + TEMP_FOLDER + "/frame%06d.jpg -hide_banner"
+command = f"ffmpeg -i {INPUT_FILE} -qscale:v {FRAME_QUALITY} {TEMP_FOLDER}/frame%06d.jpg -hide_banner"
 subprocess.call(command, shell=True)
 
-command = "ffmpeg -i " + INPUT_FILE + " -ab 160k -ac 2 -ar " + str(SAMPLE_RATE) + " -vn " + TEMP_FOLDER + "/audio.wav"
+command = f"ffmpeg -i {INPUT_FILE} -ab 160k -ac 2 -ar {SAMPLE_RATE} -vn {TEMP_FOLDER}/audio.wav"
 
 subprocess.call(command, shell=True)
 
-command = "ffmpeg -i " + TEMP_FOLDER + "/input.mp4 2>&1"
-f = open(TEMP_FOLDER + "/params.txt", "w")
+command = f"ffmpeg -i {TEMP_FOLDER}/input.mp4 2>&1"
+f = open(f"{TEMP_FOLDER}/params.txt", "w")
 subprocess.call(command, shell=True, stdout=f)
 
-sample_rate, audio_data = wavfile.read(TEMP_FOLDER + "/audio.wav")
+sample_rate, audio_data = wavfile.read(f"{TEMP_FOLDER}/audio.wav")
 audio_sample_count = audio_data.shape[0]
 max_audio_volume = get_max_volume(audio_data)
 
-f = open(TEMP_FOLDER + "/params.txt", 'r+')
+f = open(f"{TEMP_FOLDER}/params.txt", 'r+')
 pre_params = f.read()
 f.close()
 params = pre_params.split('\n')
@@ -161,8 +160,8 @@ last_existing_frame = None
 for chunk in chunks:
     audioChunk = audio_data[int(chunk[0] * samples_per_frame):int(chunk[1] * samples_per_frame)]
 
-    sFile = TEMP_FOLDER + "/tempStart.wav"
-    eFile = TEMP_FOLDER + "/tempEnd.wav"
+    sFile = f"{TEMP_FOLDER}/tempStart.wav"
+    eFile = f"{TEMP_FOLDER}/tempEnd.wav"
     wavfile.write(sFile, SAMPLE_RATE, audioChunk)
     with WavReader(sFile) as reader:
         with WavWriter(eFile, reader.channels, reader.samplerate) as writer:
@@ -197,7 +196,7 @@ for chunk in chunks:
 
     output_pointer = end_pointer
 
-wavfile.write(TEMP_FOLDER + "/audioNew.wav", SAMPLE_RATE, output_audio_data)
+wavfile.write(f"{TEMP_FOLDER}/audioNew.wav", SAMPLE_RATE, output_audio_data)
 
 '''
 output_frame = math.ceil(output_pointer/samples_per_frame)
@@ -205,8 +204,7 @@ for endGap in range(output_frame,audio_frame_count):
     copyFrame(int(audio_sample_count/samples_per_frame)-1,endGap)
 '''
 
-command = "ffmpeg -framerate " + str(
-    frame_rate) + " -i " + TEMP_FOLDER + "/newFrame%06d.jpg -i " + TEMP_FOLDER + "/audioNew.wav -strict -2 " + OUTPUT_FILE
+command = f"ffmpeg -framerate {frame_rate} -i {TEMP_FOLDER}/newFrame%06d.jpg -i {TEMP_FOLDER}/audioNew.wav -strict -2 {OUTPUT_FILE}"
 subprocess.call(command, shell=True)
 
 delete_path(TEMP_FOLDER)
