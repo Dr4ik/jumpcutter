@@ -1,16 +1,78 @@
 import subprocess
 from functools import lru_cache
 
+import ffmpeg
 from audiotsm import phasevocoder
 from audiotsm.io.wav import WavReader, WavWriter
 from scipy.io import wavfile
 import numpy as np
-import re
 import math
 from shutil import copyfile, rmtree
 import os
 import argparse
 from pytube import YouTube
+from toolz import first
+
+
+class AudioInfo:
+    sample_rate = None
+    audio_data = None
+
+    def __init__(self,sample_rate, audio_data, frame_rate):
+        self.sample_rate = sample_rate
+        self.frame_rate = frame_rate
+        self.audio_data = audio_data
+
+    @property
+    def audio_sample_count(self): return self.audio_data.shape[0]
+
+    @property
+    def max_audio_volume(self): return get_max_volume(self.audio_data)
+
+    @property
+    def samples_per_frame(self): return self.sample_rate / self.frame_rate
+
+    @property
+    def audio_frame_count(self): return int(math.ceil(self.audio_sample_count / self.samples_per_frame))
+
+
+class Config:
+    def __init__(self,
+                 frame_rate,
+                 sample_rate,
+                 silent_threshold,
+                 frame_spread,
+                 new_speed,
+                 url,
+                 frame_quality,
+                 input_file,
+                 output_file,
+    ):
+        self.frame_rate = frame_rate
+        self.sample_rate = sample_rate
+        self.silent_threshold = silent_threshold
+        self.frame_spread = frame_spread
+        self.new_speed = new_speed or []
+        self.url = url
+        self.frame_quality = frame_quality
+        self.input_file = input_file
+        self.output_file = output_file
+        self.temp_folder = "TEMP"
+        self.audio_fade_envelope_size = 400  # smooth out transitiion's audio by quickly fading in/out (arbitrary magic number whatever)
+
+    @staticmethod
+    def from_args(args):
+        return Config(
+            args.frame_rate,
+            args.sample_rate,
+            args.silent_threshold,
+            args.frame_margin,
+            (args.silent_speed, args.sounded_speed),
+            args.url,
+            args.frame_quality,
+            args.input_file if not args.url else download_file(args.url),
+            args.output_file if len(args.output_file) >= 1 else input_to_output_filename(args.input_file)
+        )
 
 
 def download_file(url):
@@ -21,8 +83,8 @@ def download_file(url):
 
 
 def get_max_volume(s):
-    maxv = float(np.max(s))
-    minv = float(np.min(s))
+    maxv = np.max(s)
+    minv = np.min(s)
     return max(maxv, -minv)
 
 
@@ -83,98 +145,31 @@ def parse_args():
     return parser.parse_args()
 
 
-class Config:
-    def __init__(self,
-                 frame_rate,
-                 sample_rate,
-                 silent_threshold,
-                 frame_spread,
-                 new_speed,
-                 url,
-                 frame_quality,
-                 input_file,
-                 output_file,
-    ):
-        self.frame_rate = frame_rate
-        self.sample_rate = sample_rate
-        self.silent_threshold = silent_threshold
-        self.frame_spread = frame_spread
-        self.new_speed = new_speed or []
-        self.url = url
-        self.frame_quality = frame_quality
-        self.input_file = input_file
-        self.output_file = output_file
-        self.temp_folder = "TEMP"
-        self.audio_fade_envelope_size = 400  # smooth out transitiion's audio by quickly fading in/out (arbitrary magic number whatever)
-
-    @staticmethod
-    def from_args(args):
-        return Config(
-            args.frame_rate,
-            args.sample_rate,
-            args.silent_threshold,
-            args.frame_margin,
-            (args.silent_speed, args.sounded_speed),
-            args.url,
-            args.frame_quality,
-            args.input_file if not args.url else download_file(args.url),
-            args.output_file if len(args.output_file) >= 1 else input_to_output_filename(args.input_file)
-        )
 
 
 conf = Config.from_args(parse_args())
+delete_path(conf.temp_folder)
 create_path(conf.temp_folder)
 
 
+def ffmpeg_get_frame_rate():
+    probe = ffmpeg.probe(conf.input_file)
+    frame_rate_str = first(filter(lambda x: x['codec_type'] == 'video', probe['streams'])).get('avg_frame_rate')
+    if frame_rate_str:
+        l, r = frame_rate_str.split('/')
+        return int(l) / int(r)
+
+
 def ffmpeg_scale():
-    subprocess.call(
-        f"ffmpeg -i {conf.input_file} -qscale:v {conf.frame_quality} {conf.temp_folder}/frame%06d.jpg -hide_banner",
-        shell=True
-    )
+   return ffmpeg.input(conf.input_file).output(f'{conf.temp_folder}/frame%06d.jpg', **{'qscale:v': 3}).run()
 
 
 def ffmpeg_extract_audio():
-    subprocess.call(
-        f"ffmpeg -i {conf.input_file} -ab 160k -ac 2 -ar {conf.sample_rate} -vn {conf.temp_folder}/audio.wav",
-        shell=True
-    )
+    return ffmpeg.input(conf.input_file).audio.output(f'{conf.temp_folder}/audio.wav', ab='160k', ac=2, ar=conf.sample_rate).run()
 
-
-def ffmpeg_get_frame_rate():
-    with open(f"{conf.temp_folder}/params.txt", "w") as f:
-        subprocess.call(f"ffmpeg -i {conf.temp_folder}/input.mp4 2>&1", shell=True, stdout=f)
-
-    with open(f"{conf.temp_folder}/params.txt", 'r+') as f:
-        for line in f.readlines():
-            m = re.search('Stream #.*Video.* ([0-9]*) fps', line)
-            if m is not None:
-                return float(m.group(1))
-
-    return None
 
 ffmpeg_scale()
 ffmpeg_extract_audio()
-
-class AudioInfo:
-    sample_rate = None
-    audio_data = None
-
-    def __init__(self,sample_rate, audio_data, frame_rate):
-        self.sample_rate = sample_rate
-        self.frame_rate = frame_rate
-        self.audio_data = audio_data
-
-    @property
-    def audio_sample_count(self): return self.audio_data.shape[0]
-
-    @property
-    def max_audio_volume(self): return get_max_volume(self.audio_data)
-
-    @property
-    def samples_per_frame(self): return self.sample_rate / self.frame_rate
-
-    @property
-    def audio_frame_count(self): return int(math.ceil(self.audio_sample_count / self.samples_per_frame))
 
 
 @lru_cache()
@@ -259,7 +254,9 @@ for endGap in range(output_frame,audio_frame_count):
     copyFrame(int(audio_sample_count/samples_per_frame)-1,endGap)
 '''
 
-command = f"ffmpeg -framerate {self.frame_rate} -i {conf.temp_folder}/newFrame%06d.jpg -i {conf.temp_folder}/audioNew.wav -strict -2 {self.output_file}"
+command = f"ffmpeg -framerate {conf.frame_rate} -i {conf.temp_folder}/newFrame%06d.jpg -i {conf.temp_folder}/audioNew.wav -strict -2 {conf.output_file}"
 subprocess.call(command, shell=True)
 
-delete_path(conf.temp_folder)
+
+
+
